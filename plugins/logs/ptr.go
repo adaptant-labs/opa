@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	minimizers "github.com/adaptant-labs/go-minimizer"
 	"github.com/open-policy-agent/opa/util"
 )
 
@@ -88,6 +89,128 @@ func (p ptr) Erase(event *EventV1) {
 	}
 
 	event.Erased = append(event.Erased, p.String())
+}
+
+func (p ptr) Mask(event *EventV1) {
+	if len(p) == 1 {
+		switch p[0] {
+		case "input":
+			event.Input = nil
+		case "result":
+			event.Result = nil
+		default:
+			panic("illegal value")
+		}
+	} else {
+		var node interface{}
+
+		switch p[0] {
+		case "input":
+			if event.Input != nil {
+				node = *event.Input
+			}
+		case "result":
+			if event.Result != nil {
+				node = *event.Result
+			}
+		}
+
+		parent := p[1 : len(p)-1].lookup(node)
+		parentObj, ok := parent.(map[string]interface{})
+		if !ok {
+			return
+		}
+
+		fld := p[len(p)-1]
+		if _, ok := parentObj[fld]; !ok {
+			return
+		}
+
+		parentObj[fld], _ = minimizers.Mask(parentObj[fld].(string))
+	}
+}
+
+func (p ptr) Minimize(level minimizers.MinimizationLevel, event *EventV1) {
+	if len(p) == 1 {
+		switch p[0] {
+		case "input":
+			event.Input = nil
+		case "result":
+			event.Result = nil
+		default:
+			panic("illegal value")
+		}
+	} else {
+		var node interface{}
+
+		switch p[0] {
+		case "input":
+			if event.Input != nil {
+				node = *event.Input
+			}
+		case "result":
+			if event.Result != nil {
+				node = *event.Result
+			}
+		}
+
+		parent := p[1 : len(p)-1].lookup(node)
+		parentObj, ok := parent.(map[string]interface{})
+		if !ok {
+			return
+		}
+
+		fld := p[len(p)-1]
+		if _, ok := parentObj[fld]; !ok {
+			return
+		}
+
+		handler := minimizers.TagMap[fld]
+		if handler == nil {
+			return
+		}
+
+		parentObj[fld] = handler(level, parentObj[fld])
+	}
+}
+
+func (p ptr) Tokenize(event *EventV1) {
+	if len(p) == 1 {
+		switch p[0] {
+		case "input":
+			event.Input = nil
+		case "result":
+			event.Result = nil
+		default:
+			panic("illegal value")
+		}
+	} else {
+		var node interface{}
+
+		switch p[0] {
+		case "input":
+			if event.Input != nil {
+				node = *event.Input
+			}
+		case "result":
+			if event.Result != nil {
+				node = *event.Result
+			}
+		}
+
+		parent := p[1 : len(p)-1].lookup(node)
+		parentObj, ok := parent.(map[string]interface{})
+		if !ok {
+			return
+		}
+
+		fld := p[len(p)-1]
+		if _, ok := parentObj[fld]; !ok {
+			return
+		}
+
+		parentObj[fld], _ = minimizers.Tokenize()
+	}
 }
 
 func (p ptr) lookup(node interface{}) interface{} {

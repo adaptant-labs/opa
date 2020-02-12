@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	minimizers "github.com/adaptant-labs/go-minimizer"
+
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 
@@ -64,7 +66,11 @@ const (
 	defaultMaxDelaySeconds      = int64(600)
 	defaultUploadSizeLimitBytes = int64(32768) // 32KB limit
 	defaultBufferSizeLimitBytes = int64(0)     // unlimited
+	defaultExcludeDecisionPath  = "/system/log/exclude"
 	defaultMaskDecisionPath     = "/system/log/mask"
+	defaultMinimizeDecisionPath = "/system/log/minimize"
+	defaultTokenizeDecisionPath = "/system/log/tokenize"
+	defaultMinimizationLevel    = minimizers.MinimizationFine
 )
 
 // ReportingConfig represents configuration for the plugin's reporting behaviour.
@@ -81,10 +87,18 @@ type Config struct {
 	Service       string          `json:"service"`
 	PartitionName string          `json:"partition_name,omitempty"`
 	Reporting     ReportingConfig `json:"reporting"`
+	ExcludeDecision *string       `json:"exclude_decision"`
 	MaskDecision  *string         `json:"mask_decision"`
+	MinimizeDecision *string      `json:"minimize_decision"`
+	TokenizeDecision *string      `json:"tokenize_decision"`
 	ConsoleLogs   bool            `json:"console"`
 
-	maskDecisionRef ast.Ref
+	MinimizationLevel minimizers.MinimizationLevel `json:"minimization_level"`
+
+	excludeDecisionRef  ast.Ref
+	maskDecisionRef     ast.Ref
+	minimizeDecisionRef ast.Ref
+	tokenizeDecisionRef ast.Ref
 }
 
 func (c *Config) validateAndInjectDefaults(services []string, plugins []string) error {
@@ -164,15 +178,49 @@ func (c *Config) validateAndInjectDefaults(services []string, plugins []string) 
 
 	c.Reporting.BufferSizeLimitBytes = &bufferLimit
 
+	if c.ExcludeDecision == nil {
+		excludeDecision := defaultExcludeDecisionPath
+		c.ExcludeDecision = &excludeDecision
+	}
+
 	if c.MaskDecision == nil {
 		maskDecision := defaultMaskDecisionPath
 		c.MaskDecision = &maskDecision
 	}
 
+	if c.MinimizeDecision == nil {
+		minimizeDecision := defaultMinimizeDecisionPath
+		c.MinimizeDecision = &minimizeDecision
+	}
+
+	if c.TokenizeDecision == nil {
+		tokenizeDecision := defaultTokenizeDecisionPath
+		c.TokenizeDecision = &tokenizeDecision
+	}
+
+	if c.MinimizationLevel == minimizers.MinimizationNone {
+		c.MinimizationLevel = defaultMinimizationLevel
+	}
+
 	var err error
+	c.excludeDecisionRef, err = parsePathToRef(*c.ExcludeDecision)
+	if err != nil {
+		return errors.Wrap(err, "invalid exclude_decision in decision_logs")
+	}
+
 	c.maskDecisionRef, err = parsePathToRef(*c.MaskDecision)
 	if err != nil {
 		return errors.Wrap(err, "invalid mask_decision in decision_logs")
+	}
+
+	c.minimizeDecisionRef, err = parsePathToRef(*c.MinimizeDecision)
+	if err != nil {
+		return errors.Wrap(err, "invalid minimize_decision in decision_logs")
+	}
+
+	c.tokenizeDecisionRef, err = parsePathToRef(*c.TokenizeDecision)
+	if err != nil {
+		return errors.Wrap(err, "invalid tokenize_decision in decision_logs")
 	}
 
 	return nil
@@ -192,7 +240,10 @@ type Plugin struct {
 	mtx       sync.Mutex
 	stop      chan chan struct{}
 	reconfig  chan reconfigure
+	exclude   *rego.PreparedEvalQuery
 	mask      *rego.PreparedEvalQuery
+	minimize  *rego.PreparedEvalQuery
+	tokenize  *rego.PreparedEvalQuery
 	maskMutex sync.Mutex
 }
 
@@ -296,10 +347,31 @@ func (p *Plugin) Log(ctx context.Context, decision *server.Info) error {
 		event.Error = decision.Error
 	}
 
-	err := p.maskEvent(ctx, decision.Txn, &event)
+	err := p.excludeEvent(ctx, decision.Txn, &event)
+	if err != nil {
+		// TODO(tsandall): see note below about error handling.
+		p.logError("Log event exclusion failed: %v.", err)
+		return nil
+	}
+
+	err = p.maskEvent(ctx, decision.Txn, &event)
 	if err != nil {
 		// TODO(tsandall): see note below about error handling.
 		p.logError("Log event masking failed: %v.", err)
+		return nil
+	}
+
+	err = p.minimizeEvent(ctx, decision.Txn, &event)
+	if err != nil {
+		// TODO(tsandall): see note below about error handling.
+		p.logError("Log event minimization failed: %v.", err)
+		return nil
+	}
+
+	err = p.tokenizeEvent(ctx, decision.Txn, &event)
+	if err != nil {
+		// TODO(tsandall): see note below about error handling.
+		p.logError("Log event tokenization failed: %v.", err)
 		return nil
 	}
 
@@ -347,7 +419,10 @@ func (p *Plugin) Reconfigure(_ context.Context, config interface{}) {
 
 	p.maskMutex.Lock()
 	defer p.maskMutex.Unlock()
+	p.exclude = nil
 	p.mask = nil
+	p.minimize = nil
+	p.tokenize = nil
 
 	_ = <-done
 }
@@ -358,7 +433,10 @@ func (p *Plugin) Reconfigure(_ context.Context, config interface{}) {
 func (p *Plugin) compilerUpdated(txn storage.Transaction) {
 	p.maskMutex.Lock()
 	defer p.maskMutex.Unlock()
+	p.exclude = nil
 	p.mask = nil
+	p.minimize = nil
+	p.tokenize = nil
 }
 
 func (p *Plugin) loop() {
@@ -477,6 +555,65 @@ func (p *Plugin) bufferChunk(buffer *logBuffer, bs []byte) {
 	}
 }
 
+func (p *Plugin) excludeEvent(ctx context.Context, txn storage.Transaction, event *EventV1) error {
+
+	err := func() error {
+
+		p.maskMutex.Lock()
+		defer p.maskMutex.Unlock()
+
+		if p.exclude == nil {
+
+			query := ast.NewBody(ast.NewExpr(ast.NewTerm(p.config.excludeDecisionRef)))
+
+			r := rego.New(
+				rego.ParsedQuery(query),
+				rego.Compiler(p.manager.GetCompiler()),
+				rego.Store(p.manager.Store),
+				rego.Transaction(txn),
+				rego.Runtime(p.manager.Info),
+			)
+
+			pq, err := r.PrepareForEval(context.Background())
+			if err != nil {
+				return err
+			}
+
+			p.exclude = &pq
+		}
+
+		return nil
+	}()
+
+	if err != nil {
+		return err
+	}
+
+	rs, err := p.exclude.Eval(
+		ctx,
+		rego.EvalInput(event),
+		rego.EvalTransaction(txn),
+	)
+
+	if err != nil {
+		return err
+	} else if len(rs) == 0 {
+		return nil
+	}
+
+	ptrs, err := resultValueToPtrs(rs[0].Expressions[0].Value)
+	if err != nil {
+		return err
+	}
+
+	for _, ptr := range ptrs {
+		ptr.Erase(event)
+	}
+
+	return nil
+}
+
+
 func (p *Plugin) maskEvent(ctx context.Context, txn storage.Transaction, event *EventV1) error {
 
 	err := func() error {
@@ -529,7 +666,123 @@ func (p *Plugin) maskEvent(ctx context.Context, txn storage.Transaction, event *
 	}
 
 	for _, ptr := range ptrs {
-		ptr.Erase(event)
+		ptr.Mask(event)
+	}
+
+	return nil
+}
+
+func (p *Plugin) minimizeEvent(ctx context.Context, txn storage.Transaction, event *EventV1) error {
+
+	err := func() error {
+
+		p.maskMutex.Lock()
+		defer p.maskMutex.Unlock()
+
+		if p.minimize == nil {
+
+			query := ast.NewBody(ast.NewExpr(ast.NewTerm(p.config.minimizeDecisionRef)))
+
+			r := rego.New(
+				rego.ParsedQuery(query),
+				rego.Compiler(p.manager.GetCompiler()),
+				rego.Store(p.manager.Store),
+				rego.Transaction(txn),
+				rego.Runtime(p.manager.Info),
+			)
+
+			pq, err := r.PrepareForEval(context.Background())
+			if err != nil {
+				return err
+			}
+
+			p.minimize = &pq
+		}
+
+		return nil
+	}()
+
+	if err != nil {
+		return err
+	}
+
+	rs, err := p.minimize.Eval(
+		ctx,
+		rego.EvalInput(event),
+		rego.EvalTransaction(txn),
+	)
+
+	if err != nil {
+		return err
+	} else if len(rs) == 0 {
+		return nil
+	}
+
+	ptrs, err := resultValueToPtrs(rs[0].Expressions[0].Value)
+	if err != nil {
+		return err
+	}
+
+	for _, ptr := range ptrs {
+		ptr.Minimize(p.config.MinimizationLevel, event)
+	}
+
+	return nil
+}
+
+func (p *Plugin) tokenizeEvent(ctx context.Context, txn storage.Transaction, event *EventV1) error {
+
+	err := func() error {
+
+		p.maskMutex.Lock()
+		defer p.maskMutex.Unlock()
+
+		if p.tokenize == nil {
+
+			query := ast.NewBody(ast.NewExpr(ast.NewTerm(p.config.tokenizeDecisionRef)))
+
+			r := rego.New(
+				rego.ParsedQuery(query),
+				rego.Compiler(p.manager.GetCompiler()),
+				rego.Store(p.manager.Store),
+				rego.Transaction(txn),
+				rego.Runtime(p.manager.Info),
+			)
+
+			pq, err := r.PrepareForEval(context.Background())
+			if err != nil {
+				return err
+			}
+
+			p.tokenize = &pq
+		}
+
+		return nil
+	}()
+
+	if err != nil {
+		return err
+	}
+
+	rs, err := p.tokenize.Eval(
+		ctx,
+		rego.EvalInput(event),
+		rego.EvalTransaction(txn),
+	)
+
+	if err != nil {
+		return err
+	} else if len(rs) == 0 {
+		return nil
+	}
+
+	ptrs, err := resultValueToPtrs(rs[0].Expressions[0].Value)
+	if err != nil {
+		return err
+	}
+
+	for _, ptr := range ptrs {
+		ptr.Tokenize(event)
 	}
 
 	return nil

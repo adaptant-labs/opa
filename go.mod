@@ -4,7 +4,9 @@ go 1.12
 
 require (
 	github.com/OneOfOne/xxhash v1.2.3
+	github.com/adaptant-labs/go-minimizer v0.0.0-20191214215008-26c6ba7270d7
 	github.com/beorn7/perks v0.0.0-20180321164747-3a771d992973 // indirect
+	github.com/brianvoe/gofakeit v3.18.0+incompatible // indirect
 	github.com/cespare/xxhash v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.4.7 // indirect
 	github.com/ghodss/yaml v0.0.0-20180820084758-c7ce16629ff4

@@ -1,7 +1,13 @@
 # github.com/OneOfOne/xxhash v1.2.3
 github.com/OneOfOne/xxhash
+# github.com/adaptant-labs/go-minimizer v0.0.0-20191214215008-26c6ba7270d7
+github.com/adaptant-labs/go-minimizer
+github.com/adaptant-labs/go-minimizer/datagen
 # github.com/beorn7/perks v0.0.0-20180321164747-3a771d992973
 github.com/beorn7/perks/quantile
+# github.com/brianvoe/gofakeit v3.18.0+incompatible
+github.com/brianvoe/gofakeit
+github.com/brianvoe/gofakeit/data
 # github.com/ghodss/yaml v0.0.0-20180820084758-c7ce16629ff4
 github.com/ghodss/yaml
 # github.com/gobwas/glob v0.2.3
