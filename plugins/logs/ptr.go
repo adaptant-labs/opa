@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -74,8 +75,22 @@ func (p ptr) Erase(event *EventV1) {
 			}
 		}
 
+		var parentObj map[string]interface{}
+		var ok bool
+
 		parent := p[1 : len(p)-1].lookup(node)
-		parentObj, ok := parent.(map[string]interface{})
+
+		rv := reflect.ValueOf(parent)
+		if rv.Kind() == reflect.Slice {
+			if rv.Len() != 1 {
+				return
+			}
+
+			parentObj, ok = rv.Index(0).Interface().(map[string]interface{})
+		} else {
+			parentObj, ok = parent.(map[string]interface{})
+		}
+
 		if !ok {
 			return
 		}
@@ -115,8 +130,22 @@ func (p ptr) Mask(event *EventV1) {
 			}
 		}
 
+		var parentObj map[string]interface{}
+		var ok bool
+
 		parent := p[1 : len(p)-1].lookup(node)
-		parentObj, ok := parent.(map[string]interface{})
+
+		rv := reflect.ValueOf(parent)
+		if rv.Kind() == reflect.Slice {
+			if rv.Len() != 1 {
+				return
+			}
+
+			parentObj, ok = rv.Index(0).Interface().(map[string]interface{})
+		} else {
+			parentObj, ok = parent.(map[string]interface{})
+		}
+
 		if !ok {
 			return
 		}
@@ -154,8 +183,22 @@ func (p ptr) Minimize(level minimizers.MinimizationLevel, event *EventV1) {
 			}
 		}
 
+		var parentObj map[string]interface{}
+		var ok bool
+
 		parent := p[1 : len(p)-1].lookup(node)
-		parentObj, ok := parent.(map[string]interface{})
+
+		rv := reflect.ValueOf(parent)
+		if rv.Kind() == reflect.Slice {
+			if rv.Len() != 1 {
+				return
+			}
+
+			parentObj, ok = rv.Index(0).Interface().(map[string]interface{})
+		} else {
+			parentObj, ok = parent.(map[string]interface{})
+		}
+
 		if !ok {
 			return
 		}
@@ -198,8 +241,22 @@ func (p ptr) Tokenize(event *EventV1) {
 			}
 		}
 
+		var parentObj map[string]interface{}
+		var ok bool
+
 		parent := p[1 : len(p)-1].lookup(node)
-		parentObj, ok := parent.(map[string]interface{})
+
+		rv := reflect.ValueOf(parent)
+		if rv.Kind() == reflect.Slice {
+			if rv.Len() != 1 {
+				return
+			}
+
+			parentObj, ok = rv.Index(0).Interface().(map[string]interface{})
+		} else {
+			parentObj, ok = parent.(map[string]interface{})
+		}
+
 		if !ok {
 			return
 		}
